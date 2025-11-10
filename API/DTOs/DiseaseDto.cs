@@ -1,5 +1,3 @@
-using PlantDiseaseApi.DTOs;
-
 namespace PlantDiseaseApi.DTOs
 {
     public class DiseaseDto
@@ -8,9 +6,11 @@ namespace PlantDiseaseApi.DTOs
         public string Name { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
         public string Symptoms { get; set; } = string.Empty;
-        public string ImageUrl { get; set; } = string.Empty;
+        
+        public string Cause { get; set; } = string.Empty;
+        public string Prevention { get; set; } = string.Empty;
 
-        // İlişkili Çözüm önerilerini de DTO olarak sunuyoruz
+        public string ImageUrl { get; set; } = string.Empty;
         public IEnumerable<SolutionDto> SuggestedSolutions { get; set; } = new List<SolutionDto>();
     }
 }

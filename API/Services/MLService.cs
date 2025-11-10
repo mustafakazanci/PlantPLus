@@ -1,93 +1,109 @@
-// MLService.cs (Services klasöründe)
-
-// Gerekli kütüphaneler (using'ler) yukarıda eklenmiş olmalı:
-using PlantDiseaseApi.DTOs;
-using Microsoft.AspNetCore.Http;
-using PlantDiseaseApi.Data;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
-using PlantDiseaseApi.Models;
+using PlantDiseaseApi.Data;
+using PlantDiseaseApi.DTOs;
 
 namespace PlantDiseaseApi.Services
 {
+    // Python servisinden gelecek yanıtı temsil eden iç sınıf
+    internal class PythonPredictionResponse
+    {
+        public string? prediction_label { get; set; }
+
+        // Bu attribute, JSON'daki değer tırnak içinde ("0.98") gelse bile
+        // onu bir sayıya (float) çevirmeye çalışmasını sağlar.
+        [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+        public float confidence { get; set; }
+    }
+
     public class MLService : IMLService
     {
         private readonly ApplicationDbContext _context;
+        private readonly ILogger<MLService> _logger;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly string _predictionServiceUrl;
 
-        public MLService(ApplicationDbContext context)
+        public MLService(ApplicationDbContext context, ILogger<MLService> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory)
         {
             _context = context;
+            _logger = logger;
+            _httpClientFactory = httpClientFactory;
+            _predictionServiceUrl = configuration["PredictionService:Url"] 
+                ?? throw new InvalidOperationException("Tahmin servis URL'si (PredictionService:Url) appsettings.json'da yapılandırılmamış.");
         }
 
-        public async Task<PredictionResponseDto> PredictDiseaseAsync(IFormFile imageFile)
+        public async Task<PredictionResponseDto> PredictAsync(IFormFile file)
         {
-            // --- Görüntü Ön İşleme Kısmı (GÜN 4'ten) ---
-            byte[] preprocessedImageBytes;
-            const int targetWidth = 224;
-            const int targetHeight = 224;
-
-            using (var imageStream = imageFile.OpenReadStream())
+            try
             {
-                // Görüntüyü yükle, yeniden boyutlandır, byte dizisine dönüştür
-                using var image = await Image.LoadAsync<Rgb24>(imageStream);
-                
-                image.Mutate(x => x.Resize(new ResizeOptions
+                _logger.LogInformation("Python tahmin servisine istek gönderiliyor: {Url}", _predictionServiceUrl);
+                var client = _httpClientFactory.CreateClient();
+
+                using var content = new MultipartFormDataContent();
+                using var streamContent = new StreamContent(file.OpenReadStream());
+                streamContent.Headers.ContentType = new MediaTypeHeaderValue(file.ContentType);
+                content.Add(streamContent, "file", file.FileName);
+
+                var response = await client.PostAsync(_predictionServiceUrl, content);
+
+                if (!response.IsSuccessStatusCode)
                 {
-                    Size = new Size(targetWidth, targetHeight),
-                    Mode = ResizeMode.Crop
-                }));
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("Python servisi başarısız yanıt döndü. Statü: {StatusCode}, Hata: {Error}", response.StatusCode, errorContent);
+                    return new PredictionResponseDto { IsSuccess = false, ErrorMessage = "Yapay zeka servisiyle iletişim kurulamadı." };
+                }
 
-                using var memoryStream = new MemoryStream();
-                await image.SaveAsJpegAsync(memoryStream); 
-                preprocessedImageBytes = memoryStream.ToArray();
-            }
+                var jsonResponse = await response.Content.ReadAsStringAsync();
+                var pythonResult = JsonSerializer.Deserialize<PythonPredictionResponse>(jsonResponse, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            // --- GÜN 6, Adım 4: İyileştirilmiş Sahte Tahmin Mantığı ---
-            
-            // Veritabanındaki Pas Hastalığı (ID 1) ve Külleme Hastalığı (ID 2) arasında rastgele seçim.
-            // .Next(1, 3) komutu, 1 veya 2 (3 hariç) üretir.
-            Random random = new Random();
-            int predictedClassId = random.Next(1, 3); 
-            
-            // %70 ile %99 arası rastgele güven skoru üretir.
-            float confidenceScore = (float)random.NextDouble() * (0.99f - 0.70f) + 0.70f; 
+                if (pythonResult == null || string.IsNullOrEmpty(pythonResult.prediction_label))
+                {
+                    _logger.LogWarning("Python servisinden geçersiz veya boş yanıt alındı: {Response}", jsonResponse);
+                    return new PredictionResponseDto { IsSuccess = false, ErrorMessage = "Yapay zeka servisinden geçersiz yanıt alındı." };
+                }
+                
+                _logger.LogInformation("Python servisinden sonuç alındı: Label='{Label}', Güven={Confidence}", pythonResult.prediction_label, pythonResult.confidence);
 
-            // Veritabanından tahmini hastalığı bul ve ilişkili çözümleri getir
-            var disease = await _context.Diseases
-                .Include(d => d.DiseaseSolutions)!
-                .ThenInclude(ds => ds.Solution)
-                .FirstOrDefaultAsync(d => d.Id == predictedClassId);
+                var detectedDisease = await _context.Diseases
+                    .Include(d => d.DiseaseSolutions)!.ThenInclude(ds => ds.Solution)
+                    .FirstOrDefaultAsync(d => d.PredictionLabel == pythonResult.prediction_label);
 
-            if (disease == null)
-            {
-                // Eğer sahte ID bile veritabanında yoksa (ki olmamalı)
-                return new PredictionResponseDto 
-                { 
-                    PredictedDiseaseName = "Sistem Hatası", 
-                    Confidence = 0.0f,
-                    DiseaseDescription = "Sahte tahmin ID'si veritabanında bulunamadı."
+                if (detectedDisease == null)
+                {
+                    _logger.LogWarning("Tespit edilen etiket '{Label}' veritabanında bulunamadı.", pythonResult.prediction_label);
+                    return new PredictionResponseDto { IsSuccess = false, ErrorMessage = $"Tespit edilen etiket '{pythonResult.prediction_label}' veritabanında bulunamadı." };
+                }
+
+                return new PredictionResponseDto
+                {
+                    IsSuccess = true,
+                    PredictedDiseaseName = detectedDisease.Name,
+                    Confidence = pythonResult.confidence,
+                    DiseaseDescription = detectedDisease.Description,
+                    Symptoms = detectedDisease.Symptoms,
+                    Cause = detectedDisease.Cause,
+                    Prevention = detectedDisease.Prevention,
+                    SuggestedSolutions = detectedDisease.DiseaseSolutions!.Select(ds => new SolutionDto
+                    {
+                        Id = ds.Solution!.Id,
+                        Title = ds.Solution.Title,
+                        Description = ds.Solution.Description,
+                        ReferenceUrl = ds.Solution.ReferenceUrl
+                    }).ToList()
                 };
             }
-
-            // Response DTO'yu hazırlıyoruz
-            var response = new PredictionResponseDto
+            catch (HttpRequestException httpEx)
             {
-                PredictedDiseaseName = disease.Name,
-                Confidence = confidenceScore,
-                DiseaseDescription = disease.Description,
-                // İlişkili çözüm önerilerini DTO'ya dönüştürüyoruz (GÜN 5'ten Model kullanıyorduk, DTO'ya dönüştürülmeli)
-                SuggestedSolutions = (IEnumerable<Solution>)(disease.DiseaseSolutions?.Select(ds => new DTOs.SolutionDto // DTO'ya dönüştürmek için düzeltme
-                {
-                    Id = ds.Solution!.Id,
-                    Title = ds.Solution.Title,
-                    Description = ds.Solution.Description,
-                    ReferenceUrl = ds.Solution.ReferenceUrl
-                }) ?? Enumerable.Empty<DTOs.SolutionDto>())
-            };
-
-            return response;
+                _logger.LogError(httpEx, "Python servisine bağlanırken bir ağ hatası oluştu. Servis çalışıyor mu? URL: {Url}", _predictionServiceUrl);
+                return new PredictionResponseDto { IsSuccess = false, ErrorMessage = "Yapay zeka servisine bağlanılamıyor." };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Tahmin servisinde beklenmedik bir hata oluştu.");
+                return new PredictionResponseDto { IsSuccess = false, ErrorMessage = "Sunucuda beklenmedik bir hata oluştu." };
+            }
         }
     }
 }

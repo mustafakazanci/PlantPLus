@@ -9,31 +9,36 @@ namespace PlantDiseaseApi.Controllers
     public class PredictionController : ControllerBase
     {
         private readonly IMLService _mlService;
+        private readonly ILogger<PredictionController> _logger;
 
-        public PredictionController(IMLService mlService)
+        public PredictionController(IMLService mlService, ILogger<PredictionController> logger)
         {
             _mlService = mlService;
+            _logger = logger;
         }
 
         [HttpPost]
-        [Consumes("multipart/form-data")]
-        public async Task<ActionResult<PredictionResponseDto>> Predict([FromForm] PredictionRequestDto request)
+        [RequestSizeLimit(10 * 1024 * 1024)]
+        public async Task<IActionResult> Predict([FromForm] PredictionRequestDto request)
         {
-
-            if (request.ImageFile == null || request.ImageFile.Length == 0)
+            // --- HATA DÜZELTME: request.ImageFile -> request.File ---
+            var allowedTypes = new[] { "image/jpeg", "image/png" };
+            if (!allowedTypes.Contains(request.File.ContentType.ToLower()))
             {
-                return BadRequest(new { Message = "Görüntü dosyası yüklenmelidir. Lütfen geçerli bir bitki yaprağı görseli seçin." });
+                return BadRequest(new { message = "Sadece .jpeg veya .png formatı desteklenmektedir." });
             }
 
-            var result = await _mlService.PredictDiseaseAsync(request.ImageFile);
+            // --- HATA DÜZELTME: request.ImageFile -> request.File ---
+            _logger.LogInformation($"Yeni tahmin isteği alındı: {request.File.FileName}");
+            
+            // --- HATA DÜZELTME: request.ImageFile -> request.File ---
+            var result = await _mlService.PredictAsync(request.File); 
 
-
-            if (result == null)
+            if (!result.IsSuccess)
             {
-                 return StatusCode(500, new { Message = "Görüntü işlenirken veya tahmin yapılırken sunucu tarafında beklenmeyen bir hata oluştu. Lütfen daha sonra tekrar deneyin." });
+                return StatusCode(500, new { message = result.ErrorMessage });
             }
 
-         
             return Ok(result);
         }
     }

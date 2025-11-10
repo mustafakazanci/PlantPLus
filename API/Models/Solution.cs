@@ -9,14 +9,13 @@ namespace PlantDiseaseApi.Models
 
         [Required]
         [MaxLength(150)]
-        public string Title { get; set; } = string.Empty; // Çözüm önerisinin başlığı (örn: "Organik Sprey Uygulaması")
+        public string Title { get; set; } = string.Empty; 
 
         [Required]
-        public string Description { get; set; } = string.Empty; // Çözüm önerisinin detaylı açıklaması
+        public string Description { get; set; } = string.Empty;
 
-        public string ReferenceUrl { get; set; } = string.Empty; // Çözüm için harici kaynak (örn: bir makale linki)
+        public string ReferenceUrl { get; set; } = string.Empty;
 
-        // Bir çözüm önerisi birden fazla hastalığa uygulanabilir.
         public ICollection<DiseaseSolution>? DiseaseSolutions { get; set; }
     }
 }

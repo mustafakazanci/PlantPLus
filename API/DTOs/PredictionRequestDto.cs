@@ -1,7 +1,11 @@
+using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Http;
+
 namespace PlantDiseaseApi.DTOs
 {
     public class PredictionRequestDto
     {
-        public IFormFile? ImageFile { get; set; }
+        [Required(ErrorMessage = "Görüntü dosyası gereklidir.")]
+        public IFormFile File { get; set; } = default!;
     }
 }

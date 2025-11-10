@@ -1,54 +1,63 @@
 using Microsoft.EntityFrameworkCore;
 using PlantDiseaseApi.Data;
-using PlantDiseaseApi.Services; // Bu using'i EF Core için ekliyoruz
+using PlantDiseaseApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Servis Kayıtları ---
-// API Controller'larını kullanabilmemiz için Controller servisini ekliyoruz
 builder.Services.AddControllers();
-
-builder.Services.AddScoped<IMLService, MLService>();
-
-// Swagger/OpenAPI dokümantasyonu için gerekli servisleri ekliyoruz
+builder.Services.AddHttpClient();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// --- Uygulama Yapılandırması (Middleware) ---
+builder.Services.AddScoped<IMLService, MLService>();
+
 var app = builder.Build();
 
-// Geliştirme ortamında Swagger UI'ı etkinleştiriyoruz.
-// Eğer üretimde de kullanmak istersek 'if (app.Environment.IsDevelopment())' bloğunun dışına taşıyabiliriz.
+// --- UYGULAMA BAŞLANGIÇ GÖREVLERİ ---
+// Bu bloğu, veritabanını oluşturmak ve başlangıç verilerini eklemek için kullanıyoruz.
+ApplyMigrationsAndSeedData(app);
+
+// --- Uygulama Yapılandırması (Middleware) ---
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection(); // HTTPS yönlendirmesini etkinleştirir
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+app.Run();
 
-app.UseAuthorization(); // Yetkilendirme middleware'ini ekler (eğer kullanırsak)
 
-app.MapControllers(); // Controller'lardaki endpoint'leri HTTP isteklerine bağlar
-
-
-using (var scope = app.Services.CreateScope())
+// --- YARDIMCI METOT ---
+// Bu metot, veritabanı migrate edildikten sonra SeedData'yı çalıştırır.
+void ApplyMigrationsAndSeedData(IHost app)
 {
-    var services = scope.ServiceProvider;
-    try
+    using (var scope = app.Services.CreateScope())
     {
-        SeedData.Initialize(services);
-    }
-    catch (Exception ex)
-    {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Veritabanı seed edilirken bir hata oluştu.");
+        var services = scope.ServiceProvider;
+        try
+        {
+            var context = services.GetRequiredService<ApplicationDbContext>();
+            var logger = services.GetRequiredService<ILogger<Program>>();
+
+            logger.LogInformation("Veritabanı migration'ları kontrol ediliyor...");
+            context.Database.Migrate(); // Bu, 'dotnet ef database update' ile aynı işi yapar.
+            logger.LogInformation("Migration'lar başarıyla uygulandı.");
+            
+            logger.LogInformation("SeedData kontrol ediliyor...");
+            SeedData.Initialize(services);
+            logger.LogInformation("SeedData başarıyla çalıştırıldı.");
+        }
+        catch (Exception ex)
+        {
+            var logger = services.GetRequiredService<ILogger<Program>>();
+            logger.LogError(ex, "Uygulama başlangıcında veritabanı işlemleri sırasında bir hata oluştu.");
+        }
     }
 }
-
-
-app.Run();

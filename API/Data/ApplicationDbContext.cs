@@ -13,7 +13,9 @@ namespace PlantDiseaseApi.Data
         public DbSet<Solution> Solutions { get; set; }
         public DbSet<DiseaseSolution> DiseaseSolutions { get; set; }
 
-        // Many-to-Many ilişkiyi yapılandırmak için OnModelCreating metodunu override ediyoruz
+        public DbSet<Tip> Tips { get; set; }
+
+   
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
            
